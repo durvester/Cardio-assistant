@@ -1,0 +1,65 @@
+{
+    "protocol_version": "0.3.0",
+    "name": "Dr. Walter Reed Cardiology Referral Agent",
+    "description": "Specialized agent for processing new patient cardiology referrals with comprehensive clinical validation, provider verification, and intelligent conversation management. Handles referral requirements, insurance validation, and generates appointment confirmations.",
+    "url": "http://localhost:8000",
+    "preferred_transport": "JSONRPC",
+    "additional_interfaces": [
+      {"url": "http://localhost:8000", "transport": "JSONRPC"}
+    ],
+    "provider": {
+      "organization": "Walter Reed Cardiology Associates",
+      "url": "https://walterreedcardiology.com"
+    },
+    "version": "1.0.0",
+    "capabilities": {
+      "streaming": false,
+      "push_notifications": false,
+      "state_transition_history": false
+    },
+    "default_input_modes": [
+      "text/plain", 
+      "application/json",
+      "application/pdf",
+      "image/jpeg",
+      "text/markdown"
+    ],
+    "default_output_modes": [
+      "text/plain",
+      "text/markdown", 
+      "application/json"
+    ],
+    "skills": [
+      {
+        "id": "cardiology-referral-processing",
+        "name": "Cardiology Referral Processing",
+        "description": "End-to-end processing of new patient cardiology referrals including provider verification via NPPES, insurance validation (United Healthcare, Aetna, Cigna, BCBS, Kaiser only), clinical criteria assessment, emergency detection, and appointment scheduling with Dr. Walter Reed (Monday/Thursday 11 AM-3 PM). Requires patient identifiers (name, DOB, MRN), referral reason, and supporting documentation (ECG, labs, medication list).",
+        "tags": [
+          "healthcare", 
+          "cardiology", 
+          "referrals", 
+          "clinical-validation", 
+          "appointment-scheduling",
+          "provider-verification",
+          "insurance-validation"
+        ],
+        "examples": [
+          "I need to refer a patient with chest pain to Dr. Reed. The referring provider is Dr. Smith from ABC Family Medicine.",
+          "Patient John Doe (DOB: 01/15/1970, MRN: 12345) has abnormal stress test results and needs cardiology consultation. Provider: Dr. Jane Johnson, NPI: 1234567890.",
+          "Urgent referral for patient with syncope and palpitations. Has recent ECG showing arrhythmia. Insurance: United Healthcare."
+        ],
+        "input_modes": [
+          "text/plain",
+          "application/json",
+          "application/pdf",
+          "image/jpeg",
+          "text/markdown"
+        ],
+        "output_modes": [
+          "text/plain",
+          "text/markdown",
+          "application/json"
+        ]
+      }
+    ]
+  }

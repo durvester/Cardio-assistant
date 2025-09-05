@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: walter-reed-cardiology-agent
+Version: 0.1.0
+Summary: A2A compliant cardiology referral agent for Dr. Walter Reed's clinic
+Requires-Python: >=3.11
+Requires-Dist: a2a-sdk>=0.3.0
+Requires-Dist: anthropic>=0.34.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: httpx>=0.27.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.0; extra == "dev"
