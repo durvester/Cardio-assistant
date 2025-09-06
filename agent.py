@@ -6,10 +6,11 @@ for processing cardiology referral requests.
 """
 
 import asyncio
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import logging
 from anthropic import AsyncAnthropic
 from config import config
+from tools import verify_provider_nppes
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +32,36 @@ class CardiologyAgent:
         
         self.client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
         self.model = config.CLAUDE_MODEL
+        
+        # Define available tools for Claude function calling
+        self.tools = [
+            {
+                "name": "verify_provider_nppes",
+                "description": "Verify a healthcare provider using the NPPES NPI Registry. Use this when you need to validate a referring provider's credentials.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "first_name": {
+                            "type": "string", 
+                            "description": "Provider's first name"
+                        },
+                        "last_name": {
+                            "type": "string",
+                            "description": "Provider's last name"
+                        },
+                        "city": {
+                            "type": "string",
+                            "description": "City where the provider practices (optional, used to narrow search if too many results)"
+                        },
+                        "state": {
+                            "type": "string", 
+                            "description": "Two-letter state abbreviation where the provider practices (e.g., 'CO' for Colorado, 'CA' for California). Optional, used to narrow search if too many results."
+                        }
+                    },
+                    "required": ["first_name", "last_name"]
+                }
+            }
+        ]
     
     async def process_message(self, message_text: str, conversation_history: Optional[List] = None) -> str:
         """
@@ -57,7 +88,7 @@ class CardiologyAgent:
 
 
     async def _process_multi_turn(self, message_text: str, conversation_history: List) -> str:
-        """Process message in Phase 2 multi-turn mode with conversation context."""
+        """Process message in multi-turn mode with conversation context and tool support."""
         
         # Build multi-turn system prompt with conversation context
         multi_turn_prompt = self._build_multi_turn_system_prompt(conversation_history)
@@ -71,15 +102,21 @@ class CardiologyAgent:
             "content": message_text
         })
         
+        # Make initial request to Claude with tools available
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=1200,  # Slightly more tokens for multi-turn
+            max_tokens=1200,
             temperature=0.7,
             system=multi_turn_prompt,
+            tools=self.tools,  # Include tools for function calling
             messages=claude_messages
         )
         
-        # Extract text from response
+        # Handle tool use if Claude wants to call tools
+        if response.stop_reason == "tool_use":
+            return await self._handle_tool_use(response, claude_messages, multi_turn_prompt)
+        
+        # Extract text from regular response
         response_text = ""
         for content in response.content:
             if content.type == "text":
@@ -87,6 +124,93 @@ class CardiologyAgent:
         
         logger.info(f"Generated multi-turn response: {response_text[:100]}...")
         return response_text
+
+    async def _handle_tool_use(self, initial_response, claude_messages: List, system_prompt: str) -> str:
+        """Handle tool use requests from Claude and return final response."""
+        
+        # Add Claude's tool use message to conversation
+        assistant_content = []
+        tool_calls = []
+        
+        for content in initial_response.content:
+            if content.type == "text":
+                assistant_content.append({
+                    "type": "text",
+                    "text": content.text
+                })
+            elif content.type == "tool_use":
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": content.id,
+                    "name": content.name,
+                    "input": content.input
+                })
+                tool_calls.append({
+                    "id": content.id,
+                    "name": content.name,
+                    "input": content.input
+                })
+        
+        claude_messages.append({
+            "role": "assistant",
+            "content": assistant_content
+        })
+        
+        # Execute tools and collect results
+        tool_results = []
+        for tool_call in tool_calls:
+            try:
+                result = await self._execute_tool(tool_call["name"], tool_call["input"])
+                tool_results.append({
+                    "type": "tool_result", 
+                    "tool_use_id": tool_call["id"],
+                    "content": str(result) if not isinstance(result, str) else result
+                })
+                logger.info(f"Executed tool {tool_call['name']} successfully")
+            except Exception as e:
+                logger.error(f"Tool execution failed for {tool_call['name']}: {e}")
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_call["id"], 
+                    "content": f"Tool execution failed: {str(e)}"
+                })
+        
+        # Add tool results to conversation
+        claude_messages.append({
+            "role": "user",
+            "content": tool_results
+        })
+        
+        # Get Claude's final response
+        final_response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=1200,
+            temperature=0.7,
+            system=system_prompt,
+            tools=self.tools,
+            messages=claude_messages
+        )
+        
+        # Extract final response text
+        final_text = ""
+        for content in final_response.content:
+            if content.type == "text":
+                final_text += content.text
+        
+        logger.info(f"Generated tool-assisted response: {final_text[:100]}...")
+        return final_text
+
+    async def _execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a tool by name with given input."""
+        if tool_name == "verify_provider_nppes":
+            return await verify_provider_nppes(
+                first_name=tool_input["first_name"],
+                last_name=tool_input["last_name"],
+                city=tool_input.get("city"),
+                state=tool_input.get("state")
+            )
+        else:
+            raise ValueError(f"Unknown tool: {tool_name}")
 
     def _build_multi_turn_system_prompt(self, conversation_history: List) -> str:
         """Build context-aware system prompt for multi-turn conversations."""
@@ -124,10 +248,11 @@ REQUIRED INFORMATION (ALL MANDATORY):
    - Contact phone number
 
 2. REFERRING PROVIDER:
-   - Physician full name and credentials
-   - NPI (National Provider Identifier) number
+   - Physician full name (first and last name - REQUIRED for verification)
+   - NPI (National Provider Identifier) number (optional but preferred)
    - Practice/organization name
    - Contact information
+   - City and state (if needed to narrow provider search)
 
 3. CLINICAL INFORMATION:
    - Primary cardiac complaint/reason for referral
@@ -176,6 +301,23 @@ CONVERSATION STRATEGY:
 - Be warm, professional, and efficient
 - For urgent/emergent cases, prioritize appropriately
 - When complete, confirm all details and provide specific appointment time
+
+AVAILABLE TOOLS:
+You have access to tools that can help verify information during the referral process:
+
+- **Provider Verification**: When you receive a referring provider's name, use the provider verification tool to validate their credentials in the NPPES database. This ensures the referral comes from a legitimate healthcare provider.
+  - Use the tool when you have the provider's first and last name
+  - If you get too many results, ask for the provider's city and state to narrow the search
+  - **CRITICAL**: Always use the EXACT data returned by the tool - never make up provider details
+  - Present the actual provider information from the tool response (real NPIs, names, locations, credentials)
+  - Handle different scenarios appropriately (no results, multiple options, inactive providers)
+
+TOOL USAGE REQUIREMENTS:
+- **NEVER fabricate or guess provider information**
+- **ALWAYS use the exact provider data returned by the verification tool**
+- **Present real NPIs, names, cities, states, and credentials from the tool response**
+- If the tool returns multiple providers, show the actual options with their real details
+- Use tools naturally as part of the conversation flow
 
 QUALITY STANDARDS:
 - Verify critical information (spelling of names, dates, numbers)

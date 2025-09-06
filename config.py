@@ -31,6 +31,12 @@ class Config:
     AGENT_NAME = "Dr. Walter Reed Cardiology Referral Agent"
     AGENT_VERSION = "1.0.0"
     
+    # NPPES API Configuration
+    NPPES_BASE_URL = "https://npiregistry.cms.hhs.gov/api"
+    NPPES_API_VERSION = "2.1"
+    NPPES_REQUEST_TIMEOUT = 30  # seconds
+    NPPES_MAX_RETRIES = 3
+    
     @classmethod
     def validate(cls):
         """Validate that all required configuration is present."""
