@@ -31,29 +31,6 @@ class CardiologyAgent:
         
         self.client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
         self.model = config.CLAUDE_MODEL
-        
-        # Phase 1 system prompt - simple and focused
-        self.system_prompt = """You are Dr. Walter Reed's Cardiology Referral Agent, specializing in processing new patient cardiology referrals for Dr. Walter Reed's clinic in Manhattan.
-
-PHASE 1 BEHAVIOR:
-- Respond helpfully to cardiology referral inquiries
-- Keep responses professional and focused on cardiology
-- Complete each conversation in a single exchange for now
-- Be encouraging but indicate what information would typically be needed for a full referral
-- Ask clarifying questions about the patient's condition and referral needs
-
-SCOPE: 
-- Only handle new patient cardiology referrals
-- Politely redirect other medical requests or general inquiries
-- Focus on: chest pain, arrhythmias, heart failure, valvular disease, syncope, hypertension, stress test abnormalities
-
-RESPONSE STYLE:
-- Professional and medical terminology appropriate
-- Warm but clinical tone
-- End each response indicating the conversation is complete for this interaction
-- Provide helpful guidance on typical referral requirements
-
-Remember: You are processing referrals, not providing medical advice or diagnoses."""
     
     async def process_message(self, message_text: str, conversation_history: Optional[List] = None) -> str:
         """
@@ -61,7 +38,7 @@ Remember: You are processing referrals, not providing medical advice or diagnose
         
         Args:
             message_text: The user's message
-            conversation_history: Optional conversation history (for Phase 2 multi-turn)
+            conversation_history: Optional conversation history for multi-turn conversations
             
         Returns:
             Agent's response text
@@ -69,40 +46,15 @@ Remember: You are processing referrals, not providing medical advice or diagnose
         try:
             logger.info(f"Processing message: {message_text[:100]}...")
             
-            # Use Phase 1 behavior only if conversation_history is explicitly None (backward compatibility)
-            # Empty list means we want multi-turn mode for a new conversation
-            if conversation_history is None:
-                return await self._process_single_turn(message_text)
-            else:
-                return await self._process_multi_turn(message_text, conversation_history)
+            # Always use multi-turn processing for cleaner, unified logic
+            # If conversation_history is None, treat as empty list (new conversation)
+            history = conversation_history if conversation_history is not None else []
+            return await self._process_multi_turn(message_text, history)
             
         except Exception as e:
             logger.error(f"Error processing message with Claude API: {e}")
             return self._get_error_response()
 
-    async def _process_single_turn(self, message_text: str) -> str:
-        """Process message in Phase 1 single-turn mode (backward compatibility)."""
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=1000,
-            temperature=0.7,
-            system=self.system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": message_text
-                }
-            ]
-        )
-        
-        # Extract text from response
-        response_text = ""
-        for content in response.content:
-            if content.type == "text":
-                response_text += content.text
-        
-        logger.info(f"Generated single-turn response: {response_text[:100]}...")
-        return response_text
 
     async def _process_multi_turn(self, message_text: str, conversation_history: List) -> str:
         """Process message in Phase 2 multi-turn mode with conversation context."""
@@ -142,7 +94,22 @@ Remember: You are processing referrals, not providing medical advice or diagnose
         # Analyze conversation to understand current referral state
         referral_context = self._analyze_referral_progress(conversation_history)
         
+        # For new conversations (empty history), provide guidance for both quick questions and full referrals
+        # For continuing conversations, focus on completing the referral workflow
+        is_new_conversation = len(conversation_history) == 0
+        
+        conversation_guidance = ""
+        if is_new_conversation:
+            conversation_guidance = """
+HANDLING NEW CONVERSATIONS:
+- For simple questions or quick inquiries, provide helpful information and mark as [REFERRAL_COMPLETE]
+- For full referral requests, begin the comprehensive information collection process
+- Adapt your response based on the complexity and completeness of the initial request
+- Always provide appropriate next steps
+"""
+        
         return f"""You are Dr. Walter Reed's Cardiology Referral Agent, specializing in processing new patient cardiology referrals for Dr. Walter Reed's clinic in Manhattan.
+{conversation_guidance}
 
 MISSION: Guide users through a complete cardiology referral process via intelligent conversation, ultimately scheduling an appointment with Dr. Reed.
 
@@ -220,6 +187,10 @@ IMPORTANT: You MUST include exactly ONE state control marker ([NEED_MORE_INFO], 
 
     def _analyze_referral_progress(self, conversation_history: List) -> str:
         """Analyze conversation history to understand referral completion status."""
+        
+        # Handle empty conversation history
+        if not conversation_history:
+            return "INFORMATION COLLECTED SO FAR: None yet - this is a new conversation\nSTILL NEEDED: All required information"
         
         # Extract all user messages to analyze collected information
         user_messages = []
@@ -314,7 +285,7 @@ This conversation is complete for now."""
         """Check if the agent is healthy and can communicate with Claude API."""
         try:
             # Simple test message to Claude
-            test_response = await self.client.messages.create(
+            await self.client.messages.create(
                 model=self.model,
                 max_tokens=10,
                 temperature=0,
