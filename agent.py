@@ -56,6 +56,10 @@ class CardiologyAgent:
                         "state": {
                             "type": "string", 
                             "description": "Two-letter state abbreviation where the provider practices (e.g., 'CO' for Colorado, 'CA' for California). Optional, used to narrow search if too many results."
+                        },
+                        "npi": {
+                            "type": "string",
+                            "description": "10-digit National Provider Identifier (NPI) number. If provided, tool will validate that this exact NPI matches the provider name. Use this when the referral source provides an NPI."
                         }
                     },
                     "required": ["first_name", "last_name"]
@@ -207,7 +211,8 @@ class CardiologyAgent:
                 first_name=tool_input["first_name"],
                 last_name=tool_input["last_name"],
                 city=tool_input.get("city"),
-                state=tool_input.get("state")
+                state=tool_input.get("state"),
+                npi=tool_input.get("npi")
             )
         else:
             raise ValueError(f"Unknown tool: {tool_name}")
@@ -291,7 +296,9 @@ Example: "I need the patient's insurance details. [NEED_MORE_INFO] What is their
 Example: "Excellent! I have all required information. [REFERRAL_COMPLETE] Your cardiology referral for [patient name] has been processed. I've scheduled an appointment with Dr. Reed on [date] at [time]. Confirmation details will be sent to the referring provider and patient."
 
 **[REFERRAL_FAILED]** - If error, invalid info, or cannot proceed
-Example: "I cannot process this referral due to invalid NPI number. [REFERRAL_FAILED] Please provide a valid 10-digit NPI for the referring physician."
+Examples: 
+- "I cannot process this referral due to invalid NPI number. [REFERRAL_FAILED] Please provide a valid 10-digit NPI for the referring physician."
+- "After multiple attempts, I cannot verify the provider information needed to process this referral. [REFERRAL_FAILED] Please contact Dr. Reed's office directly at (555) 123-4567 with the correct provider details, and we'll be happy to help process the referral."
 
 CONVERSATION STRATEGY:
 - Review conversation history to avoid asking for information already provided
@@ -307,7 +314,17 @@ You have access to tools that can help verify information during the referral pr
 
 - **Provider Verification**: When you receive a referring provider's name, use the provider verification tool to validate their credentials in the NPPES database. This ensures the referral comes from a legitimate healthcare provider.
   - Use the tool when you have the provider's first and last name
-  - If you get too many results, ask for the provider's city and state to narrow the search
+  - **EXTRACT NPIs FROM TEXT**: Look for NPI numbers in the message (patterns like "NPI 1234567890", "NPI: 1234567890", or "NPI#1234567890")
+  - **NPI VALIDATION**: If an NPI is mentioned in the text, extract it and include it in the tool call for verification
+  - **EXAMPLES**:
+    - "Dr. Sarah Johnson, NPI 1234567890" → Call tool with npi="1234567890"
+    - "Referring physician: Dr. Smith (NPI: 9876543210)" → Call tool with npi="9876543210"
+  - **TOOL RESPONSE HANDLING**:
+    * If tool returns "not_found" status: Ask for clarification (spelling, NPI, location) up to 3 attempts
+    * If tool returns "error" status: Ask for alternative provider information, retry once
+    * If tool returns "npi_mismatch" status: The provided NPI doesn't match - ask for correct NPI or different provider
+    * If you get too many results: Ask for the provider's city and state to narrow the search
+    * After 3 failed verification attempts: Use [REFERRAL_FAILED] with helpful guidance
   - **CRITICAL**: Always use the EXACT data returned by the tool - never make up provider details
   - Present the actual provider information from the tool response (real NPIs, names, locations, credentials)
   - Handle different scenarios appropriately (no results, multiple options, inactive providers)
@@ -316,14 +333,33 @@ TOOL USAGE REQUIREMENTS:
 - **NEVER fabricate or guess provider information**
 - **ALWAYS use the exact provider data returned by the verification tool**
 - **Present real NPIs, names, cities, states, and credentials from the tool response**
+- **MANDATORY NPI VALIDATION**: When NPI is provided, include it in tool call and fail referral if mismatch
 - If the tool returns multiple providers, show the actual options with their real details
 - Use tools naturally as part of the conversation flow
+
+REFERRAL FAILURE THRESHOLDS:
+- **After 5 Total Turns**: If unable to complete referral after 5 conversation turns, use [REFERRAL_FAILED]
+- **After 3 Provider Verification Attempts**: If unable to verify provider after 3 clarification attempts
+- **After 3 Patient Information Attempts**: If unable to collect required patient information after 3 requests
+- **Client Explicitly States**: If client says they don't have required information, use [REFERRAL_FAILED] with guidance
+- **When to Use [REFERRAL_FAILED]**: 
+  - 5 conversation turns reached without completion
+  - 3 failed provider verification attempts
+  - 3 failed patient information collection attempts  
+  - Client explicitly cannot provide required information
+  - Critical system errors that prevent referral processing
 
 QUALITY STANDARDS:
 - Verify critical information (spelling of names, dates, numbers)
 - Ensure clinical appropriateness of referral
 - Confirm insurance coverage and authorization requirements
 - Provide clear next steps and contact information
+
+CONVERSATION MANAGEMENT:
+- Keep track of conversation turns and attempts for each type of information
+- Be helpful and patient - give clients multiple opportunities to provide correct information
+- Use your judgment to balance helpfulness with efficiency
+- The system prompt handles business logic - focus on natural, helpful conversation
 
 IMPORTANT: You MUST include exactly ONE state control marker ([NEED_MORE_INFO], [REFERRAL_COMPLETE], or [REFERRAL_FAILED]) in every response."""
 

@@ -109,7 +109,8 @@ async def verify_provider_nppes(
     first_name: str,
     last_name: str,
     city: Optional[str] = None,
-    state: Optional[str] = None
+    state: Optional[str] = None,
+    npi: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Verify a healthcare provider using the NPPES NPI Registry.
@@ -124,6 +125,7 @@ async def verify_provider_nppes(
         last_name: Provider's last name  
         city: City to narrow search (optional)
         state: State to narrow search (optional)
+        npi: NPI number to validate against found providers (optional)
         
     Returns:
         Dict containing verification results:
@@ -168,9 +170,12 @@ async def verify_provider_nppes(
         elif result_count <= 3:
             # Process each provider to extract key information
             processed_providers = []
+            npi_match_found = False
+            
             for provider in results:
                 basic = provider.get("basic", {})
                 addresses = provider.get("addresses", [])
+                provider_npi = provider.get("number", "")
                 
                 # Get primary address (usually first one)
                 primary_address = addresses[0] if addresses else {}
@@ -180,7 +185,7 @@ async def verify_provider_nppes(
                 is_active = status == "A"
                 
                 processed_provider = {
-                    "npi": provider.get("number", ""),
+                    "npi": provider_npi,
                     "name": f"{basic.get('first_name', '')} {basic.get('middle_name', '')} {basic.get('last_name', '')}".strip(),
                     "credentials": basic.get("credential", ""),
                     "status": "Active" if is_active else "Inactive",
@@ -190,6 +195,23 @@ async def verify_provider_nppes(
                     "enumeration_date": basic.get("enumeration_date", "")
                 }
                 processed_providers.append(processed_provider)
+                
+                # Check for NPI match if provided
+                if npi and provider_npi == npi.strip():
+                    npi_match_found = True
+            
+            # If NPI was provided but no match found, return validation failure
+            if npi and not npi_match_found:
+                return {
+                    "status": "npi_mismatch",
+                    "message": f"NPI {npi} does not match any provider named '{first_name} {last_name}'. " +
+                              f"Found {result_count} provider(s) with that name but different NPIs. " +
+                              "Please verify the NPI number or provider name.",
+                    "result_count": result_count,
+                    "providers": processed_providers,
+                    "needs_refinement": False,
+                    "provided_npi": npi
+                }
             
             return {
                 "status": "success",
@@ -202,7 +224,57 @@ async def verify_provider_nppes(
             }
         
         else:
-            # Too many results - need refinement
+            # Too many results - need refinement, but check NPI first if provided
+            if npi:
+                # Check if any of the results match the provided NPI
+                npi_match_found = False
+                matching_provider = None
+                
+                for provider in results:
+                    provider_npi = provider.get("number", "")
+                    if provider_npi == npi.strip():
+                        npi_match_found = True
+                        # Process the matching provider
+                        basic = provider.get("basic", {})
+                        addresses = provider.get("addresses", [])
+                        primary_address = addresses[0] if addresses else {}
+                        status = basic.get("status", "")
+                        is_active = status == "A"
+                        
+                        matching_provider = {
+                            "npi": provider_npi,
+                            "name": f"{basic.get('first_name', '')} {basic.get('middle_name', '')} {basic.get('last_name', '')}".strip(),
+                            "credentials": basic.get("credential", ""),
+                            "status": "Active" if is_active else "Inactive",
+                            "is_active": is_active,
+                            "city": primary_address.get("city", ""),
+                            "state": primary_address.get("state", ""),
+                            "enumeration_date": basic.get("enumeration_date", "")
+                        }
+                        break
+                
+                if not npi_match_found:
+                    return {
+                        "status": "npi_mismatch",
+                        "message": f"NPI {npi} does not match any provider named '{first_name} {last_name}'. " +
+                                  f"Found {result_count} provider(s) with that name but none have the provided NPI. " +
+                                  "Please verify the NPI number or provider name.",
+                        "result_count": result_count,
+                        "providers": [],
+                        "needs_refinement": False,
+                        "provided_npi": npi
+                    }
+                else:
+                    # Return the matching provider
+                    return {
+                        "status": "success",
+                        "message": f"Found exact match: {matching_provider['name']} with NPI {npi}.",
+                        "result_count": 1,
+                        "providers": [matching_provider],
+                        "needs_refinement": False
+                    }
+            
+            # No NPI provided or NPI matched - proceed with normal refinement
             refinement_params = []
             if not city:
                 refinement_params.append("city")
