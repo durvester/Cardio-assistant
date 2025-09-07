@@ -410,7 +410,254 @@ class ComprehensivePhase2Test:
             self.log_test_result("Complete Referral Workflow", False, f"Error: {e}")
 
     # ========================================
-    # TEST CATEGORY 6: LLM INTELLIGENCE
+    # TEST CATEGORY 6: PROVIDER VERIFICATION
+    # ========================================
+
+    async def test_provider_verification_mohit_durve(self):
+        """Test provider verification with Mohit Durve (expected: not found, conversation ends)."""
+        logger.info("\n🧪 Testing Provider Verification - Mohit Durve (Not Found)...")
+        
+        try:
+            # Start conversation with referral from Mohit Durve
+            response = await self.send_message("I need a cardiology referral from Dr. Mohit Durve")
+            result = response.get("result", {})
+            
+            # Should create task properly
+            task_id = result.get("id")
+            context_id = result.get("contextId")
+            
+            if not task_id or not context_id:
+                self.log_test_result("Provider Verification - Mohit Durve Setup", False, "Failed to get task/context IDs")
+                return
+            
+            # Check agent response - should indicate provider not found
+            agent_response = result.get("status", {}).get("message", {}).get("parts", [{}])[0].get("text", "")
+            
+            # Should indicate provider verification failed and conversation ending
+            verification_indicators = ["not found", "cannot find", "unable to verify", "get back", "contact"]
+            found_indicators = [indicator for indicator in verification_indicators 
+                              if indicator.lower() in agent_response.lower()]
+            
+            if not found_indicators:
+                self.log_test_result(
+                    "Provider Verification - Mohit Durve", 
+                    False, 
+                    f"Agent didn't indicate provider not found. Response: {agent_response[:100]}..."
+                )
+                return
+            
+            # Check if conversation should end (completed or failed state)
+            state = result.get("status", {}).get("state")
+            if state not in ["completed", "failed", "input-required"]:
+                self.log_test_result(
+                    "Provider Verification - Mohit Durve State", 
+                    False, 
+                    f"Expected conversation to handle not found gracefully, got state: {state}"
+                )
+                return
+            
+            self.log_test_result(
+                "Provider Verification - Mohit Durve", 
+                True, 
+                f"Agent handled unknown provider correctly: {found_indicators[0]}"
+            )
+            
+        except Exception as e:
+            self.log_test_result("Provider Verification - Mohit Durve", False, f"Error: {e}")
+
+    async def test_provider_verification_josh_mandel(self):
+        """Test provider verification with Josh Mandel (expected: 2 results, agent picks one)."""
+        logger.info("\n🧪 Testing Provider Verification - Josh Mandel (Multiple Results)...")
+        
+        try:
+            # Start conversation with referral from Josh Mandel
+            response = await self.send_message("I have a cardiology referral from Dr. Josh Mandel")
+            result = response.get("result", {})
+            
+            task_id = result.get("id")
+            context_id = result.get("contextId")
+            
+            if not task_id or not context_id:
+                self.log_test_result("Provider Verification - Josh Mandel Setup", False, "Failed to get task/context IDs")
+                return
+            
+            # Check agent response - should handle multiple results
+            agent_response = result.get("status", {}).get("message", {}).get("parts", [{}])[0].get("text", "")
+            
+            # Agent should either:
+            # 1. Present options for user to select, or
+            # 2. Pick one automatically and proceed
+            selection_indicators = ["select", "which", "found", "multiple", "choose"] + ["josh", "mandel"]
+            found_indicators = [indicator for indicator in selection_indicators 
+                              if indicator.lower() in agent_response.lower()]
+            
+            if not found_indicators:
+                self.log_test_result(
+                    "Provider Verification - Josh Mandel", 
+                    False, 
+                    f"Agent didn't handle multiple providers. Response: {agent_response[:100]}..."
+                )
+                return
+            
+            # State should be input-required (asking for more info) or continuing
+            state = result.get("status", {}).get("state")
+            if state not in ["input-required", "working"]:
+                self.log_test_result(
+                    "Provider Verification - Josh Mandel State", 
+                    False, 
+                    f"Expected input-required or working state, got: {state}"
+                )
+                return
+            
+            self.log_test_result(
+                "Provider Verification - Josh Mandel", 
+                True, 
+                f"Agent handled multiple providers correctly"
+            )
+            
+        except Exception as e:
+            self.log_test_result("Provider Verification - Josh Mandel", False, f"Error: {e}")
+
+    async def test_provider_verification_peter_smith_refinement(self):
+        """Test provider verification with Peter Smith (expected: too many, refine with Aurora, CO)."""
+        logger.info("\n🧪 Testing Provider Verification - Peter Smith (Refinement)...")
+        
+        try:
+            # Step 1: Start with Peter Smith (should get too many results)
+            response1 = await self.send_message("Referral from Dr. Peter Smith for patient evaluation")
+            result1 = response1.get("result", {})
+            
+            task_id = result1.get("id")
+            context_id = result1.get("contextId")
+            
+            if not task_id or not context_id:
+                self.log_test_result("Provider Verification - Peter Smith Setup", False, "Failed to get task/context IDs")
+                return
+            
+            # Check if agent asks for more details
+            agent_response1 = result1.get("status", {}).get("message", {}).get("parts", [{}])[0].get("text", "")
+            
+            refinement_indicators = ["more information", "city", "state", "location", "narrow", "many"]
+            found_indicators = [indicator for indicator in refinement_indicators 
+                              if indicator.lower() in agent_response1.lower()]
+            
+            # Step 2: Provide city information
+            response2 = await self.send_message(
+                "Dr. Peter Smith practices in Aurora, Colorado", 
+                task_id, 
+                context_id
+            )
+            result2 = response2.get("result", {})
+            
+            # Check agent response after providing location
+            agent_response2 = result2.get("status", {}).get("message", {}).get("parts", [{}])[0].get("text", "")
+            
+            # Should now be able to proceed or show refined results
+            success_indicators = ["aurora", "colorado", "found", "verified", "proceed"]
+            refined_indicators = [indicator for indicator in success_indicators 
+                                if indicator.lower() in agent_response2.lower()]
+            
+            if not refined_indicators:
+                self.log_test_result(
+                    "Provider Verification - Peter Smith Refinement", 
+                    False, 
+                    f"Agent didn't handle location refinement. Response: {agent_response2[:100]}..."
+                )
+                return
+            
+            # Validate conversation continues properly
+            state2 = result2.get("status", {}).get("state")
+            if state2 not in ["input-required", "working", "completed"]:
+                self.log_test_result(
+                    "Provider Verification - Peter Smith State", 
+                    False, 
+                    f"Unexpected state after refinement: {state2}"
+                )
+                return
+            
+            self.log_test_result(
+                "Provider Verification - Peter Smith Refinement", 
+                True, 
+                f"Agent handled provider refinement correctly"
+            )
+            
+        except Exception as e:
+            self.log_test_result("Provider Verification - Peter Smith Refinement", False, f"Error: {e}")
+
+    async def test_provider_verification_with_complete_referral(self):
+        """Test provider verification as part of a complete referral workflow."""
+        logger.info("\n🧪 Testing Provider Verification in Complete Workflow...")
+        
+        try:
+            # Start complete referral with provider verification
+            response1 = await self.send_message("I need a cardiology referral")
+            result1 = response1.get("result", {})
+            task_id = result1.get("id")
+            context_id = result1.get("contextId")
+            
+            workflow_steps = [
+                "Patient: Sarah Johnson, DOB 03/20/1985, MRN 54321, phone 555-9876",
+                "Referring physician: Dr. Josh Mandel from Boston Medical Center",  # Should trigger verification
+                "Clinical: Patient has palpitations and dizziness, EKG shows irregular rhythm",
+                "Insurance: Blue Cross Blue Shield, member ID BC789012, authorization AUTH456", 
+                "Urgency: Urgent priority, patient needs evaluation within 1 week"
+            ]
+            
+            final_result = None
+            for i, step in enumerate(workflow_steps):
+                logger.info(f"Workflow step {i+1}: {step[:50]}...")
+                
+                response = await self.send_message(step, task_id, context_id)
+                result = response.get("result", {})
+                final_result = result
+                
+                state = result.get("status", {}).get("state")
+                logger.info(f"State after step {i+1}: {state}")
+                
+                # Special handling for provider verification step (step 2)
+                if i == 1:  # Provider step
+                    agent_response = result.get("status", {}).get("message", {}).get("parts", [{}])[0].get("text", "")
+                    verification_indicators = ["josh", "mandel", "verify", "found"]
+                    found_verification = any(indicator.lower() in agent_response.lower() 
+                                           for indicator in verification_indicators)
+                    
+                    if not found_verification:
+                        self.log_test_result(
+                            "Provider Verification in Workflow", 
+                            False, 
+                            f"Provider verification not evident in step 2. Response: {agent_response[:100]}..."
+                        )
+                        return
+                
+                # If we reach completed state, that's success
+                if state == "completed":
+                    self.log_test_result(
+                        "Provider Verification in Complete Workflow", 
+                        True, 
+                        f"Complete workflow with provider verification completed after {i+1} steps"
+                    )
+                    return
+            
+            # If we get here, check if workflow is progressing properly
+            final_state = final_result.get("status", {}).get("state") if final_result else "unknown"
+            if final_state in ["input-required", "working"]:
+                self.log_test_result(
+                    "Provider Verification in Complete Workflow", 
+                    True, 
+                    f"Workflow progressing correctly with provider verification. Final state: {final_state}"
+                )
+            else:
+                self.log_test_result(
+                    "Provider Verification in Complete Workflow", 
+                    False, 
+                    f"Workflow stalled. Final state: {final_state}"
+                )
+            
+        except Exception as e:
+            self.log_test_result("Provider Verification in Complete Workflow", False, f"Error: {e}")
+
+    # ========================================
+    # TEST CATEGORY 7: LLM INTELLIGENCE
     # ========================================
 
     async def test_context_awareness(self):
@@ -534,6 +781,12 @@ class ComprehensivePhase2Test:
         await self.test_complete_referral_workflow()
         await self.test_context_awareness()
         
+        # Provider verification tests
+        await self.test_provider_verification_mohit_durve()
+        await self.test_provider_verification_josh_mandel() 
+        await self.test_provider_verification_peter_smith_refinement()
+        await self.test_provider_verification_with_complete_referral()
+        
         # Protocol compliance
         await self.test_all_jsonrpc_methods()
         
@@ -559,6 +812,7 @@ class ComprehensivePhase2Test:
             "History & Continuation": [],
             "State Management": [],
             "Workflow Logic": [],
+            "Provider Verification": [],
             "LLM Intelligence": [],
             "Protocol Compliance": []
         }
@@ -571,6 +825,8 @@ class ComprehensivePhase2Test:
                 categories["History & Continuation"].append(result)
             elif any(keyword in test_name for keyword in ["State", "Input-Required"]):
                 categories["State Management"].append(result)
+            elif any(keyword in test_name for keyword in ["Provider Verification"]):
+                categories["Provider Verification"].append(result)
             elif any(keyword in test_name for keyword in ["Workflow", "Referral"]):
                 categories["Workflow Logic"].append(result)
             elif any(keyword in test_name for keyword in ["Context", "LLM"]):
@@ -598,7 +854,7 @@ class ComprehensivePhase2Test:
         # Phase 2 readiness assessment
         critical_failures = [
             test for test in failed_tests 
-            if any(keyword in test["test"] for keyword in ["History", "Workflow", "Continuation"])
+            if any(keyword in test["test"] for keyword in ["History", "Workflow", "Continuation", "Provider Verification"])
         ]
         
         if success_rate >= 90:
