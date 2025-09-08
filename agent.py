@@ -423,10 +423,6 @@ This conversation is complete for now."""
             claude_messages = self._build_claude_conversation(history)
             claude_messages.append({"role": "user", "content": message_text})
             
-            # DEBUG: Log what Claude actually sees
-            logger.info(f"Claude will see {len(claude_messages)} messages:")
-            for i, msg in enumerate(claude_messages):
-                logger.info(f"  {i+1}. {msg['role']}: {msg['content'][:100]}...")
             
             # 3. LLM processing
             yield {
