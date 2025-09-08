@@ -4,15 +4,18 @@ Main entry point for the Walter Reed Cardiology Agent A2A Server.
 This module sets up and runs the A2A-compliant server using the A2A Python SDK.
 """
 
+import asyncio
 import json
 import logging
 import uvicorn
 from pathlib import Path
+from string import Template
 
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.tasks.database_task_store import DatabaseTaskStore
 from a2a.types import AgentCard
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from config import config
 from agent_executor import cardiology_executor
@@ -35,7 +38,12 @@ def load_agent_card() -> AgentCard:
             raise FileNotFoundError(f"Agent card file not found: {agent_card_path}")
         
         with open(agent_card_path, 'r') as f:
-            agent_card_data = json.load(f)
+            agent_card_template = f.read()
+        
+        # Use Template for safe variable substitution
+        template = Template(agent_card_template)
+        agent_card_json = template.safe_substitute(A2A_BASE_URL=config.A2A_BASE_URL)
+        agent_card_data = json.loads(agent_card_json)
         
         # Convert JSON to AgentCard object
         # The A2A SDK should handle this conversion automatically
@@ -49,7 +57,7 @@ def load_agent_card() -> AgentCard:
         raise
 
 
-def create_app() -> A2AStarletteApplication:
+async def create_app() -> A2AStarletteApplication:
     """
     Create and configure the A2A Starlette application.
     
@@ -60,8 +68,23 @@ def create_app() -> A2AStarletteApplication:
         # Load agent card
         agent_card = load_agent_card()
         
-        # Create task store for managing task state
-        task_store = InMemoryTaskStore()
+        # Ensure data directory exists
+        data_dir = Path(config.DATA_DIR)
+        data_dir.mkdir(exist_ok=True)
+        
+        # Create SQLite database engine
+        db_path = data_dir / config.TASK_STORE_DB
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        
+        # Create database task store
+        task_store = DatabaseTaskStore(
+            engine=engine,
+            create_table=True,
+            table_name="tasks"
+        )
+        
+        # Initialize the database schema
+        await task_store.initialize()
         
         # Create request handler with our agent executor
         request_handler = DefaultRequestHandler(
@@ -76,6 +99,7 @@ def create_app() -> A2AStarletteApplication:
         )
         
         logger.info("A2A application created successfully")
+        logger.info(f"Database task store initialized at: {db_path}")
         return app
         
     except Exception as e:
@@ -92,8 +116,12 @@ def main():
         config.validate()
         logger.info("Configuration validated successfully")
         
+        # Create async function to initialize app
+        async def init_app():
+            return await create_app()
+        
         # Create the application
-        app = create_app()
+        app = asyncio.run(init_app())
         
         # Build the Starlette app
         starlette_app = app.build()
@@ -101,7 +129,7 @@ def main():
         # Log startup information
         logger.info(f"Starting {config.AGENT_NAME} v{config.AGENT_VERSION}")
         logger.info(f"Server will run on http://{config.HOST}:{config.PORT}")
-        logger.info(f"Agent card available at: http://{config.HOST}:{config.PORT}/.well-known/agent-card.json")
+        logger.info(f"Agent card available at: {config.A2A_BASE_URL}/.well-known/agent-card.json")
         logger.info(f"A2A endpoint available at: {config.A2A_BASE_URL}")
         
         # Start the server

@@ -2,10 +2,10 @@
     "protocol_version": "0.3.0",
     "name": "Dr. Walter Reed Cardiology Referral Agent",
     "description": "Specialized agent for processing new patient cardiology referrals with comprehensive clinical validation, provider verification, and intelligent conversation management. Handles referral requirements, insurance validation, and generates appointment confirmations.",
-    "url": "http://localhost:8000",
+    "url": "$A2A_BASE_URL",
     "preferred_transport": "JSONRPC",
     "additional_interfaces": [
-      {"url": "http://localhost:8000", "transport": "JSONRPC"}
+      {"url": "$A2A_BASE_URL", "transport": "JSONRPC"}
     ],
     "provider": {
       "organization": "Walter Reed Cardiology Associates",
