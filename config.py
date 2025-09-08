@@ -27,6 +27,10 @@ class Config:
     AGENT_CARD_PATH = "agentcard.json"
     A2A_BASE_URL = os.getenv("A2A_BASE_URL", "http://127.0.0.1:8000")
     
+    # Database Configuration
+    DATA_DIR = os.getenv("DATA_DIR", "./var")
+    TASK_STORE_DB = os.getenv("TASK_STORE_DB", "task_store.db")
+    
     # Agent Configuration
     AGENT_NAME = "Dr. Walter Reed Cardiology Referral Agent"
     AGENT_VERSION = "1.0.0"

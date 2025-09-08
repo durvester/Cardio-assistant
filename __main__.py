@@ -4,6 +4,7 @@ Main entry point for the Walter Reed Cardiology Agent A2A Server.
 This module sets up and runs the A2A-compliant server using the A2A Python SDK.
 """
 
+import asyncio
 import json
 import logging
 import uvicorn
@@ -12,8 +13,9 @@ from string import Template
 
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.tasks.database_task_store import DatabaseTaskStore
 from a2a.types import AgentCard
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from config import config
 from agent_executor import cardiology_executor
@@ -55,7 +57,7 @@ def load_agent_card() -> AgentCard:
         raise
 
 
-def create_app() -> A2AStarletteApplication:
+async def create_app() -> A2AStarletteApplication:
     """
     Create and configure the A2A Starlette application.
     
@@ -66,8 +68,23 @@ def create_app() -> A2AStarletteApplication:
         # Load agent card
         agent_card = load_agent_card()
         
-        # Create task store for managing task state
-        task_store = InMemoryTaskStore()
+        # Ensure data directory exists
+        data_dir = Path(config.DATA_DIR)
+        data_dir.mkdir(exist_ok=True)
+        
+        # Create SQLite database engine
+        db_path = data_dir / config.TASK_STORE_DB
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        
+        # Create database task store
+        task_store = DatabaseTaskStore(
+            engine=engine,
+            create_table=True,
+            table_name="tasks"
+        )
+        
+        # Initialize the database schema
+        await task_store.initialize()
         
         # Create request handler with our agent executor
         request_handler = DefaultRequestHandler(
@@ -82,6 +99,7 @@ def create_app() -> A2AStarletteApplication:
         )
         
         logger.info("A2A application created successfully")
+        logger.info(f"Database task store initialized at: {db_path}")
         return app
         
     except Exception as e:
@@ -98,8 +116,12 @@ def main():
         config.validate()
         logger.info("Configuration validated successfully")
         
+        # Create async function to initialize app
+        async def init_app():
+            return await create_app()
+        
         # Create the application
-        app = create_app()
+        app = asyncio.run(init_app())
         
         # Build the Starlette app
         starlette_app = app.build()

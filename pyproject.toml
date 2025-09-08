@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A2A compliant cardiology referral agent for Dr. Walter Reed's clinic"
 requires-python = ">=3.11"
 dependencies = [
-    "a2a-sdk[http-server]>=0.3.0",
+    "a2a-sdk[http-server,sqlite]>=0.3.0",
     "anthropic>=0.34.0",
     "python-dotenv>=1.0.0",
     "uvicorn>=0.30.0",
