@@ -13,7 +13,7 @@ from typing import Optional
 from a2a.server.agent_execution.agent_executor import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events.event_queue import EventQueue
-from a2a.server.tasks import TaskUpdater
+from a2a.server.tasks import TaskUpdater, TaskStore
 from a2a.types import (
     Task, TaskStatus, TaskState, Message, TextPart, Part, TaskArtifactUpdateEvent
 )
@@ -39,9 +39,10 @@ class CardiologyAgentExecutor(AgentExecutor):
     message processing to the CardiologyAgent business logic.
     """
     
-    def __init__(self):
+    def __init__(self, task_store: Optional[TaskStore] = None):
         """Initialize the executor."""
         logger.info("Initializing CardiologyAgentExecutor")
+        self.task_store = task_store
         
     async def execute_streaming(
         self,
@@ -66,11 +67,8 @@ class CardiologyAgentExecutor(AgentExecutor):
             
             logger.info(f"Executing streaming task {context.task_id}")
             
-            # Get or create task (following LangGraph pattern)
-            task = context.current_task
-            if not task:
-                task = new_task(context.message)
-                await event_queue.enqueue_event(task)
+            # Get or create task with proper conversation continuation
+            task = await self._get_or_create_task(context, event_queue)
             
             # Create TaskUpdater for A2A event management
             updater = TaskUpdater(event_queue, task.id, task.context_id)
@@ -85,6 +83,9 @@ class CardiologyAgentExecutor(AgentExecutor):
                 is_task_complete = item['is_task_complete']
                 require_user_input = item['require_user_input']
                 content = item['content']
+                
+                # Check if the agent response contains task_state information for proper mapping
+                task_state_from_agent = item.get('task_state')  # This is our new field
                 
                 if not is_task_complete and not require_user_input:
                     # Intermediate update - use TaskState.working with final=False
@@ -101,22 +102,37 @@ class CardiologyAgentExecutor(AgentExecutor):
                         final=True  # End this streaming cycle
                     )
                     break
+                elif task_state_from_agent == "failed":
+                    # Task failed - use TaskState.failed with final=True
+                    await updater.update_status(
+                        TaskState.failed,
+                        new_agent_text_message(content, task.context_id, task.id),
+                        final=True  # End this streaming cycle - task reached terminal state
+                    )
+                    break
+                elif task_state_from_agent == "canceled":
+                    # Task canceled - use TaskState.canceled with final=True
+                    await updater.update_status(
+                        TaskState.canceled,
+                        new_agent_text_message(content, task.context_id, task.id),
+                        final=True  # End this streaming cycle - task reached terminal state
+                    )
+                    break
+                elif task_state_from_agent == "rejected":
+                    # Task rejected - use TaskState.rejected with final=True
+                    await updater.update_status(
+                        TaskState.rejected,
+                        new_agent_text_message(content, task.context_id, task.id),
+                        final=True  # End this streaming cycle - task reached terminal state
+                    )
+                    break
                 else:
                     # Task complete - send final status with the result content
-                    # Per A2A spec: final=True signals end of updates when task reaches terminal state
                     await updater.update_status(
                         TaskState.completed,
                         new_agent_text_message(content, task.context_id, task.id),
                         final=True  # End this streaming cycle - task reached terminal state
                     )
-                    
-                    # Note: TaskArtifactUpdateEvent would be used here if we had large files
-                    # or structured data that needed to be delivered as artifacts.
-                    # For simple text responses, the status message is sufficient.
-                    # 
-                    # Example artifact delivery (commented out):
-                    # if self._should_send_as_artifact(content):
-                    #     await self._send_artifact(event_queue, task, content)
                     break
             
             logger.info(f"Streaming task {context.task_id} completed")
@@ -268,6 +284,41 @@ class CardiologyAgentExecutor(AgentExecutor):
             
         except Exception as e:
             logger.error(f"Error in error handler: {e}")
+    
+    async def _get_or_create_task(self, context: RequestContext, event_queue: EventQueue) -> Task:
+        """
+        Get existing task or create new one with proper conversation continuation.
+        
+        Args:
+            context: Request context containing task and message info
+            event_queue: Event queue for publishing new tasks
+            
+        Returns:
+            Task object (existing or newly created)
+        """
+        # First, try to use the current task provided by A2A SDK
+        if context.current_task:
+            logger.info(f"Using existing task from context: {context.current_task.id}")
+            return context.current_task
+        
+        # If no current task, try to find existing task by context_id
+        if self.task_store and context.context_id:
+            try:
+                # Get all tasks and find ones with matching context_id
+                # Access the tasks property to get the task collection
+                all_tasks = self.task_store.tasks
+                for task_id, task in all_tasks.items():
+                    if task and task.context_id == context.context_id:
+                        logger.info(f"Found existing task by context_id: {task.id}")
+                        return task
+            except Exception as e:
+                logger.warning(f"Failed to search for existing tasks: {e}")
+        
+        # No existing task found, create a new one
+        logger.info(f"Creating new task for context_id: {context.context_id}")
+        task = new_task(context.message)
+        await event_queue.enqueue_event(task)
+        return task
     
     def _should_send_as_artifact(self, content: str) -> bool:
         """

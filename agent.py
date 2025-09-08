@@ -8,6 +8,8 @@ for processing cardiology referral requests.
 import asyncio
 from typing import List, Optional, Dict, Any
 import logging
+import json
+import re
 from anthropic import AsyncAnthropic
 from config import config
 from tools import verify_provider_nppes
@@ -37,29 +39,29 @@ class CardiologyAgent:
         self.tools = [
             {
                 "name": "verify_provider_nppes",
-                "description": "Verify a healthcare provider using the NPPES NPI Registry. Use this when you need to validate a referring provider's credentials.",
+                "description": "Verify a healthcare provider using the NPPES NPI Registry. Use this to validate referring provider credentials before completing any referral.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "first_name": {
                             "type": "string", 
-                            "description": "Provider's first name"
+                            "description": "Provider's first name (required)"
                         },
                         "last_name": {
                             "type": "string",
-                            "description": "Provider's last name"
+                            "description": "Provider's last name (required)"
                         },
                         "city": {
                             "type": "string",
-                            "description": "City where the provider practices (optional, used to narrow search if too many results)"
+                            "description": "City where the provider practices. Highly recommended to include as users typically know this and it helps narrow search results."
                         },
                         "state": {
                             "type": "string", 
-                            "description": "Two-letter state abbreviation where the provider practices (e.g., 'CO' for Colorado, 'CA' for California). Optional, used to narrow search if too many results."
+                            "description": "Two-letter state abbreviation (e.g., 'FL', 'NY'). Helps narrow search when there are multiple providers with same name."
                         },
                         "npi": {
                             "type": "string",
-                            "description": "10-digit National Provider Identifier (NPI) number. If provided, tool will validate that this exact NPI matches the provider name. Use this when the referral source provides an NPI."
+                            "description": "10-digit NPI number if user provides it. Most users don't know NPIs, so only include if explicitly mentioned."
                         }
                     },
                     "required": ["first_name", "last_name"]
@@ -81,216 +83,275 @@ class CardiologyAgent:
             raise ValueError(f"Unknown tool: {tool_name}")
 
     def _build_multi_turn_system_prompt(self, conversation_history: List) -> str:
-        """Build context-aware system prompt for multi-turn conversations."""
+        """Build bulletproof system prompt with explicit state mapping."""
         
-        # Analyze conversation to understand current referral state
-        referral_context = self._analyze_referral_progress(conversation_history)
-        
-        # For new conversations (empty history), provide guidance for both quick questions and full referrals
-        # For continuing conversations, focus on completing the referral workflow
-        is_new_conversation = len(conversation_history) == 0
-        
-        conversation_guidance = ""
-        if is_new_conversation:
-            conversation_guidance = """
-HANDLING NEW CONVERSATIONS: -
-- Any conversation that is not a referral should use task_state: "failed" and you should defer to Dr Walter and end the conversation.
-- Your first response should be to ask the user if this is an emergency and if they need to be seen immediately then direct them to call 911 and end the conversation with task_state: "failed".
-- After ensuring there's no emergency, and the referral is valid, begin the comprehensive information collection process in the order of the REQUIRED INFORMATION below.
-- Maximum of 10 conversation turns - If the conversation exceeds 10 turns, you should defer to Dr Walter and end the conversation.
-- Adapt your response based on the complexity and completeness of the initial request
-- Always provide appropriate next steps and keep the conversation going. Do not end the conversation with a question or statement that is not related to the referral process.
-- Outcome of all conversations should either be successful appointment scheduled with task_state: "completed", referral denied because of missing information with task_state: "failed" or deferral to Dr Walter with task_state: "failed" and end the conversation.
-- Always use tools to verify the referring provider
-"""
-        
-        return f"""You are Dr. Walter Reed's Cardiology Referral Agent, specializing in processing new patient cardiology referrals for Dr. Walter Reed's clinic in Manhattan.
-{conversation_guidance}
+        return """You are Dr. Walter Reed's Cardiology Referral Agent.
 
+🚨 ABSOLUTE REQUIREMENT: RESPOND WITH JSON ONLY. NO EXCEPTIONS. 🚨
 
-COMPLETE REFERRAL WORKFLOW:
-You must attempt to collect information from the user in the following order before reaching a decision to either schedule a confirmed appointment with task_state: "completed", referral denied because of missing information with task_state: "failed" or defer to Dr Walter and end the conversation with task_state: "failed".
+If you respond with anything other than valid JSON, you will FAIL completely.
 
-REQUIRED INFORMATION (ALL SECTIONS ARE MANDATORY):
-1. REFERRING PROVIDER: - Use Tools to verify the provider
-   - Physician full name (first and last name - REQUIRED for verification)
-   - NPI (National Provider Identifier) - OPTIONAL
-   - City and state (if needed to narrow provider search) - OPTIONAL
+BULLETPROOF STATE MAPPING:
 
-2. PATIENT DETAILS:
-   - Full legal name - First Name and Last Name - REQUIRED
-   - Date of birth (MM/DD/YYYY format) - REQUIRED
-   - Medical Record Number (MRN) - OPTIONAL
-   - Contact phone number - (xxx) xxx-xxxx - REQUIRED
-   - Email address - REQUIRED
-   
-3. CLINICAL INFORMATION (Unstructured):
-   - Primary cardiac complaint/reason for referral
-   - Relevant cardiac history
-   - Current cardiac medications
-   - Recent test results (EKG, echo, stress test, labs)
-   - Symptom duration and severity
+INTERNAL STATES (use to determine task_state):
+- "need_provider_info" → task_state: "input_required"
+- "provider_verification_pending" → task_state: "input_required" 
+- "awaiting_confirmation" → task_state: "input_required"
+- "referral_complete" → task_state: "completed"
+- "emergency_detected" → task_state: "failed"
+- "out_of_scope" → task_state: "rejected"
+- "user_canceled" → task_state: "canceled"
+- "invalid_request" → task_state: "rejected"
 
-4. INSURANCE & AUTHORIZATION (Unstructured):
-   - Insurance provider name
-   - Member ID and group number
-   - Authorization number (if pre-auth required)
-   - Verify coverage for cardiology consultation
+STATE TRANSITION RULES:
+1. Emergency symptoms (chest pain, heart attack, can't breathe, 911) → "emergency_detected" → task_state: "failed"
+2. Non-cardiology request → "out_of_scope" → task_state: "rejected"
+3. User says "cancel", "stop", "nevermind" → "user_canceled" → task_state: "canceled"
+4. Invalid/inappropriate request → "invalid_request" → task_state: "rejected"
+5. No provider name in conversation → "need_provider_info" → task_state: "input_required"
+6. Provider name found, tool not called yet → "provider_verification_pending" → task_state: "input_required"
+7. Provider verified, waiting for user confirmation → "awaiting_confirmation" → task_state: "input_required"
+8. User confirms provider (says "yes", "correct", "that's right") → "referral_complete" → task_state: "completed"
 
+🚨 CONFIRMATION LOGIC (CRITICAL):
+If you just asked "Is this the correct physician?" and user says YES:
+- internal_state: "referral_complete"  
+- task_state: "completed"
+- Do NOT ask for more provider info
+- Do NOT run the tool again
+- COMPLETE THE REFERRAL IMMEDIATELY
 
-CONVERSATION CONTEXT:
-{referral_context}
+NEVER ask for provider info after user confirms with "yes"/"correct"/"that's right"
 
-APPOINTMENT SCHEDULING: - 
-SCHEDULING RULES:
-- Dr Walter Reed only sees new patients on Monday and Thursday: 11:00 AM - 3:00 PM and you can only schedule appointments during this time-slot for all the referral requests. Ensure you let the user know about this constraint.
-- Even then if the user is not okay with the appointment time slots that are available, you should defer to Dr Walter and end the conversation with task_state: "failed".
+MANDATORY JSON FORMAT (ALL 3 FIELDS REQUIRED):
+{
+    "internal_state": "must be one of: need_provider_info, provider_verification_pending, awaiting_confirmation, referral_complete, emergency_detected, out_of_scope, user_canceled, invalid_request",
+    "task_state": "input_required | completed | failed | canceled | rejected",
+    "response_text": "Your message to the user"
+}
 
-RESPONSE FORMAT:
-You MUST format every response as a JSON object with this exact structure:
+CRITICAL: You MUST include internal_state in EVERY response. No exceptions.
 
-```json
-{{
-    "task_state": "input_required" | "completed" | "failed",
-    "response_text": "Your message to the user", 
-    "reasoning": "Brief explanation of your decision"
-}}
-```
+EXAMPLES:
 
-**Task State Values:**
-- **"input_required"** - When missing required information
-- **"completed"** - When ALL information collected and appointment scheduled  
-- **"failed"** - If error, invalid info, or cannot proceed and deferral to Dr Walter is needed
-
-**Examples:**
-
-Input Required:
-```json
-{{
+Need provider info:
+{
+    "internal_state": "need_provider_info",
     "task_state": "input_required",
-    "response_text": "I need the patient's insurance details. What is their insurance provider and member ID?",
-    "reasoning": "Missing required insurance information to complete referral"
-}}
-```
+    "response_text": "I need the referring physician's name and city to process this cardiology referral."
+}
 
-Referral Complete:
-```json
-{{
-    "task_state": "completed", 
-    "response_text": "Excellent! I have all required information. Your cardiology referral for [patient name] has been processed. I've scheduled an appointment with Dr. Reed on [date] at [time]. Confirmation details will be sent to the referring provider and patient.",
-    "reasoning": "All required information collected and appointment successfully scheduled"
-}}
-```
+Provider verified, awaiting confirmation:
+{
+    "internal_state": "awaiting_confirmation", 
+    "task_state": "input_required",
+    "response_text": "I found Dr. [Name] in [City]. Is this the correct referring physician?"
+}
 
-Referral Failed:
-```json
-{{
+User confirmed provider:
+{
+    "internal_state": "referral_complete",
+    "task_state": "completed",
+    "response_text": "Referral completed for Dr. [Name]. You'll be contacted within 1-2 business days."
+}
+
+🚨 CRITICAL RULE: 
+User says "Yes" after provider verification = REFERRAL COMPLETE
+- Change to: "referral_complete" + "completed" 
+- Do NOT ask questions
+- Do NOT verify again
+
+Emergency detected:
+{
+    "internal_state": "emergency_detected",
+    "task_state": "failed", 
+    "response_text": "This is an emergency. Please call 911 immediately."
+}
+
+User canceled:
+{
+    "internal_state": "user_canceled",
+    "task_state": "canceled",
+    "response_text": "Referral request has been canceled as requested."
+}
+
+Request rejected:
+{
+    "internal_state": "out_of_scope", 
+    "task_state": "rejected",
+    "response_text": "I can only process cardiology referrals for Dr. Walter Reed. Please contact the appropriate department for other requests."
+}
+
+🚨 JSON-ONLY ENFORCEMENT 🚨:
+Your response must be EXACTLY this format with NO other text:
+
+{
+    "internal_state": "emergency_detected",
     "task_state": "failed",
-    "response_text": "After multiple attempts, I cannot verify the provider information needed to process this referral. Please contact Dr. Reed's office directly at (555) 123-4567 with the correct provider details, and we'll be happy to help process the referral.",
-    "reasoning": "Unable to verify provider credentials after multiple attempts"
-}}
-```
+    "response_text": "This is an emergency. Please call 911 immediately."
+}
 
-CONVERSATION STRATEGY:
-- Review conversation history to avoid asking for information already provided
-- Follow logical order: Verify valid referral → Verify Emergency case → Verify Provider → Verify Patient → Verify Clinical → Verify Insurance → Make Decision - This is NON-NEGOTIABLE and you must follow this order.
-- Explain why each piece of information is needed
-- Be warm, professional, and efficient
-- For urgent/emergent cases immediately end the conversation with task_state: "failed" and instruct the user to call 911.
-- Before completing the referral, you must confirm all details with the user and ensure they are okay with the details.
-- When complete, provide the final confirmation and schedule the appointment.
+DO NOT add explanations, markdown, or any text outside the JSON object.
+RESPOND WITH JSON ONLY. NOTHING ELSE."""
 
-AVAILABLE TOOLS:
-You have access to tools that can help verify information during the referral process:
-
-- **Provider Verification**: When you receive a referring provider's name, use the provider verification tool to validate their credentials in the NPPES database. This ensures the referral comes from a legitimate healthcare provider.
-  - Use the tool when you have the provider's first and last name
-  - **EXTRACT NPIs FROM TEXT**: Look for NPI numbers in the message (patterns like "NPI 1234567890", "NPI: 1234567890", or "NPI#1234567890")
-  - **NPI VALIDATION**: If an NPI is mentioned in the text, extract it and include it in the tool call for verification
-  - **EXAMPLES**:
-    - "Dr. Sarah Johnson, NPI 1234567890" → Call tool with npi="1234567890"
-    - "Referring physician: Dr. Smith (NPI: 9876543210)" → Call tool with npi="9876543210"
-  - **TOOL RESPONSE HANDLING**:
-    * If tool returns "not_found" status: Ask for clarification (spelling, NPI, location)
-    * If tool returns "error" status: Ask for alternative provider information 
-    * If tool returns "npi_mismatch" status: The provided NPI doesn't match - ask for correct NPI or ask the user to specify the provider
-    * If the tool returns multiple providers less than or equal to 3, show the actual options with their real details and ask the user to pick a provider by providing the details of all the results
-    * If the tool returns too many results greater than 3, ask for the provider's city and state to narrow the search. If the results are still too many, ask the user to pick a provider by providing the details of the narrowed results
-    * **CRITICAL**: Always use the EXACT data returned by the tool - never make up provider details
-  
-TOOL USAGE REQUIREMENTS:
-- Present the actual provider information from the tool response (real NPIs, names, locations, credentials)
-- Use tools naturally as part of the conversation flow
-- **NEVER fabricate or guess provider information**
-- **ALWAYS use the exact provider data returned by the verification tool**
-- **Present real NPIs, names, cities, states, and credentials from the tool response**
-- **MANDATORY NPI VALIDATION**: When NPI is provided, include it in tool call and if mismatch ask for clarification
-
-REFERRAL FAILURE THRESHOLDS:
-- After 10 conversation turns without completion, use task_state: "failed" by deferring to Dr Walter and end the conversation
-- Emergency cases immediately use task_state: "failed" and end the conversation
-- If the user is not okay with the appointment time slots that are available, you should defer to Dr Walter and end the conversation with task_state: "failed"
-- Out of context conversations immediately use task_state: "failed" and end the conversation
-- Any suspicious activity immediately use task_state: "failed" and end the conversation
-- If the information provided is not good enough to process the referral, use task_state: "failed" by deferring to Dr Walter and end the conversation
-
-
-IMPORTANT: You MUST respond with valid JSON using exactly one of the three task_state values: "input_required", "completed", or "failed"."""
-
-    def _analyze_referral_progress(self, conversation_history: List) -> str:
-        """Analyze conversation history to understand referral completion status."""
+    def _analyze_conversation_state(self, conversation_history: List) -> str:
+        """Analyze conversation to provide intelligent state guidance."""
         
-        # Handle empty conversation history
         if not conversation_history:
-            return "INFORMATION COLLECTED SO FAR: None yet - this is a new conversation\nSTILL NEEDED: All required information"
+            return "NEW CONVERSATION - Ready to process cardiology referral"
         
-        # Extract all user messages to analyze collected information
-        user_messages = []
+        # Count turns and extract key information
+        turn_count = len([msg for msg in conversation_history if hasattr(msg, 'role') and msg.role == "user"])
+        
+        # Extract all conversation text
+        all_text = ""
         for msg in conversation_history:
-            if hasattr(msg, 'role') and msg.role == "user":
-                if hasattr(msg, 'parts') and msg.parts:
-                    for part in msg.parts:
-                        if hasattr(part, 'root') and hasattr(part.root, 'text'):
-                            user_messages.append(part.root.text)
+            if hasattr(msg, 'parts') and msg.parts:
+                for part in msg.parts:
+                    if hasattr(part, 'root') and hasattr(part.root, 'text'):
+                        all_text += part.root.text + " "
         
-        all_user_text = " ".join(user_messages).lower()
+        all_text = all_text.lower()
         
-        # Simple analysis of what information might be present
-        collected_info = []
-        missing_info = []
+        # Intelligent state analysis
+        state_info = []
         
-        # Check for patient information
-        if any(keyword in all_user_text for keyword in ["patient", "name", "john", "jane", "dob", "birth", "mrn"]):
-            collected_info.append("Patient information (partial or complete)")
+        # Turn pressure
+        if turn_count >= 5:
+            state_info.append("🚨 TURN LIMIT REACHED - MUST COMPLETE OR FAIL")
+        elif turn_count >= 3:
+            state_info.append(f"⚠️ Turn {turn_count}/5 - COMPLETE SOON")
         else:
-            missing_info.append("Patient information")
+            state_info.append(f"Turn {turn_count}/5")
         
-        # Check for provider information  
-        if any(keyword in all_user_text for keyword in ["doctor", "dr.", "physician", "provider", "npi"]):
-            collected_info.append("Provider information (partial or complete)")
+        # Emergency check
+        emergency_keywords = ["chest pain", "heart attack", "can't breathe", "difficulty breathing", "emergency", "911"]
+        if any(keyword in all_text for keyword in emergency_keywords):
+            state_info.append("🚨 EMERGENCY DETECTED - MUST FAIL")
         else:
-            missing_info.append("Provider information")
+            state_info.append("✅ No emergency symptoms")
             
-        # Check for clinical information
-        if any(keyword in all_user_text for keyword in ["chest pain", "arrhythmia", "symptoms", "condition", "history"]):
-            collected_info.append("Clinical information (partial or complete)")
+        # Scope check  
+        cardiology_keywords = ["cardiology", "cardiologist", "heart", "cardiac", "referral"]
+        if any(keyword in all_text for keyword in cardiology_keywords):
+            state_info.append("✅ Cardiology referral confirmed")
         else:
-            missing_info.append("Clinical information")
+            state_info.append("❓ Scope unclear")
             
-        # Check for insurance
-        if any(keyword in all_user_text for keyword in ["insurance", "aetna", "blue cross", "united", "cigna"]):
-            collected_info.append("Insurance information (partial or complete)")
+        # Provider verification status
+        if "verify_provider_nppes" in str(conversation_history):
+            if any(word in all_text for word in ["yes", "correct", "that's right", "confirmed"]):
+                state_info.append("✅ PROVIDER CONFIRMED - READY TO COMPLETE")
+            else:
+                state_info.append("⏳ Provider found, awaiting confirmation")
+        elif any(word in all_text for word in ["doctor", "dr.", "physician", "provider"]):
+            state_info.append("⏳ Provider mentioned, needs verification")
         else:
-            missing_info.append("Insurance information")
+            state_info.append("❌ Provider info needed")
+            
+        return " | ".join(state_info)
+
+    def _extract_json_from_response(self, response_text: str) -> Optional[dict]:
+        """Extract JSON from response - handles both markdown blocks and raw JSON."""
+        if not response_text.strip():
+            return None
         
-        context = f"INFORMATION COLLECTED SO FAR: {collected_info if collected_info else 'None yet'}\n"
-        context += f"STILL NEEDED: {missing_info if missing_info else 'All required information appears to be collected'}"
-        
-        return context
+        # Try to parse the entire response as JSON first (since we're telling Claude to respond ONLY with JSON)
+        try:
+            parsed = json.loads(response_text.strip())
+            logger.info(f"Parsed JSON from response: {parsed}")
+            if isinstance(parsed, dict) and "task_state" in parsed:
+                logger.info(f"Validating state before: {parsed}")
+                self._validate_bulletproof_state(parsed)
+                logger.info(f"Validated state after: {parsed}")
+                return parsed
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse as direct JSON: {e}")
+            pass
+            
+        # Fallback: Look for JSON in markdown code blocks
+        match = re.search(r'```json\s*\n?(.*?)\n?```', response_text, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(1).strip())
+                if isinstance(parsed, dict) and "task_state" in parsed:
+                    self._validate_bulletproof_state(parsed)
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+                    
+        return None
+
+    def _validate_bulletproof_state(self, response_data: dict) -> None:
+        """
+        Bulletproof state validation with explicit internal state mapping.
+        """
+        try:
+            internal_state = response_data.get("internal_state")
+            task_state = response_data.get("task_state")
+            logger.info(f"State validation input - internal_state: {internal_state}, task_state: {task_state}")
+            
+            # Valid internal states
+            valid_internal_states = [
+                "need_provider_info", "provider_verification_pending", "awaiting_confirmation",
+                "referral_complete", "emergency_detected", "out_of_scope", "user_canceled", "invalid_request"
+            ]
+            
+            # Valid task states  
+            valid_task_states = ["input_required", "completed", "failed", "canceled", "rejected"]
+            
+            # Validate internal state - add if missing
+            if not internal_state:
+                logger.warning("Missing internal_state field, adding default")
+                response_data["internal_state"] = "need_provider_info"
+                internal_state = "need_provider_info"
+            elif internal_state not in valid_internal_states:
+                logger.warning(f"Invalid internal_state: {internal_state}, defaulting to need_provider_info")
+                response_data["internal_state"] = "need_provider_info"
+                internal_state = "need_provider_info"
+            
+            # Validate task state
+            if task_state not in valid_task_states:
+                logger.warning(f"Invalid task_state: {task_state}, defaulting to input_required")
+                response_data["task_state"] = "input_required"
+                task_state = "input_required"
+            
+            # Enforce state mapping rules
+            state_mapping = {
+                "need_provider_info": "input_required",
+                "provider_verification_pending": "input_required", 
+                "awaiting_confirmation": "input_required",
+                "referral_complete": "completed",
+                "emergency_detected": "failed",
+                "out_of_scope": "rejected",
+                "user_canceled": "canceled", 
+                "invalid_request": "rejected"
+            }
+            
+            expected_task_state = state_mapping.get(internal_state)
+            if expected_task_state and task_state != expected_task_state:
+                logger.warning(f"State mismatch: internal_state '{internal_state}' should map to task_state '{expected_task_state}', got '{task_state}'. Correcting.")
+                response_data["task_state"] = expected_task_state
+                
+        except Exception as e:
+            logger.warning(f"State validation error: {e}")
+            # Fail gracefully with safe defaults
+            response_data["internal_state"] = "need_provider_info"
+            response_data["task_state"] = "input_required"
+
 
     def _build_claude_conversation(self, conversation_history: List) -> List[dict]:
-        """Convert A2A conversation history to Claude API format."""
+        """Convert A2A conversation history to Claude API format, filtering out streaming noise."""
         claude_messages = []
+        
+        # Streaming messages to filter out (these confuse Claude's context)
+        streaming_noise = [
+            "Analyzing referral request and determining next steps...",
+            "Processing request with AI assistant...",
+            "Executing verify_provider_nppes verification...",
+            "Completed verify_provider_nppes verification",
+            "Processing verification results and generating response..."
+        ]
         
         for msg in conversation_history:
             if hasattr(msg, 'role') and hasattr(msg, 'parts'):
@@ -301,6 +362,10 @@ IMPORTANT: You MUST respond with valid JSON using exactly one of the three task_
                         text_content += part.root.text
                 
                 if text_content.strip():
+                    # Skip streaming noise messages
+                    if text_content.strip() in streaming_noise:
+                        continue
+                        
                     # Convert A2A roles to Claude API roles
                     claude_role = "assistant" if msg.role == "agent" else msg.role
                     claude_messages.append({
@@ -342,7 +407,6 @@ This conversation is complete for now."""
         - require_user_input: bool  
         - content: str
         """
-        import json
         from typing import AsyncGenerator
         
         try:
@@ -358,6 +422,11 @@ This conversation is complete for now."""
             multi_turn_prompt = self._build_multi_turn_system_prompt(history)
             claude_messages = self._build_claude_conversation(history)
             claude_messages.append({"role": "user", "content": message_text})
+            
+            # DEBUG: Log what Claude actually sees
+            logger.info(f"Claude will see {len(claude_messages)} messages:")
+            for i, msg in enumerate(claude_messages):
+                logger.info(f"  {i+1}. {msg['role']}: {msg['content'][:100]}...")
             
             # 3. LLM processing
             yield {
@@ -466,22 +535,15 @@ This conversation is complete for now."""
             
             # 5. Parse final response and determine completion state
             try:
-                if not response_text.strip():
-                    logger.error(f"Empty response text from Claude API")
-                    raise json.JSONDecodeError("Empty response", "", 0)
-                    
                 logger.debug(f"Parsing Claude response: {response_text[:200]}...")
                 
-                # Handle Claude 4 Sonnet markdown code blocks
-                clean_response = response_text.strip()
-                if clean_response.startswith('```json') and clean_response.endswith('```'):
-                    # Extract JSON from markdown code block
-                    clean_response = clean_response[7:-3].strip()  # Remove ```json and ```
-                elif clean_response.startswith('```') and clean_response.endswith('```'):
-                    # Extract content from any code block
-                    clean_response = clean_response[3:-3].strip()
+                # Use standard JSON extraction method
+                response_data = self._extract_json_from_response(response_text)
                 
-                response_data = json.loads(clean_response)
+                if not response_data:
+                    logger.error("No valid JSON found in Claude response")
+                    raise json.JSONDecodeError("No valid JSON structure found", response_text, 0)
+                
                 task_state = response_data.get("task_state")
                 clean_text = response_data.get("response_text", response_text)
                 
@@ -489,18 +551,24 @@ This conversation is complete for now."""
                     yield {
                         'is_task_complete': False,
                         'require_user_input': True,
+                        'task_state': task_state,  # Pass through for executor
                         'content': clean_text
                     }
-                elif task_state == "completed":
+                elif task_state in ["completed", "failed", "canceled", "rejected"]:
+                    # All terminal states - mark as complete with no further input needed
                     yield {
-                        'is_task_complete': True,
-                        'require_user_input': False,
+                        'is_task_complete': True,  # Terminal state
+                        'require_user_input': False,  # No further input needed
+                        'task_state': task_state,  # Pass through for executor (completed/failed/canceled/rejected)
                         'content': clean_text
                     }
-                else:  # failed
+                else:
+                    # Fallback for any unexpected states - treat as input required
+                    logger.warning(f"Unexpected task_state: {task_state}, treating as input_required")
                     yield {
                         'is_task_complete': False,
                         'require_user_input': True,
+                        'task_state': "input_required",  # Safe fallback
                         'content': clean_text
                     }
                     

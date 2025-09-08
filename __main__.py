@@ -63,6 +63,9 @@ def create_app() -> A2AStarletteApplication:
         # Create task store for managing task state
         task_store = InMemoryTaskStore()
         
+        # Pass task store to the existing executor instance
+        cardiology_executor.task_store = task_store
+        
         # Create request handler with our agent executor
         request_handler = DefaultRequestHandler(
             agent_executor=cardiology_executor,
