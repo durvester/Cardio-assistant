@@ -8,6 +8,7 @@ import json
 import logging
 import uvicorn
 from pathlib import Path
+from string import Template
 
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -35,7 +36,12 @@ def load_agent_card() -> AgentCard:
             raise FileNotFoundError(f"Agent card file not found: {agent_card_path}")
         
         with open(agent_card_path, 'r') as f:
-            agent_card_data = json.load(f)
+            agent_card_template = f.read()
+        
+        # Use Template for safe variable substitution
+        template = Template(agent_card_template)
+        agent_card_json = template.safe_substitute(A2A_BASE_URL=config.A2A_BASE_URL)
+        agent_card_data = json.loads(agent_card_json)
         
         # Convert JSON to AgentCard object
         # The A2A SDK should handle this conversion automatically
@@ -101,7 +107,7 @@ def main():
         # Log startup information
         logger.info(f"Starting {config.AGENT_NAME} v{config.AGENT_VERSION}")
         logger.info(f"Server will run on http://{config.HOST}:{config.PORT}")
-        logger.info(f"Agent card available at: http://{config.HOST}:{config.PORT}/.well-known/agent-card.json")
+        logger.info(f"Agent card available at: {config.A2A_BASE_URL}/.well-known/agent-card.json")
         logger.info(f"A2A endpoint available at: {config.A2A_BASE_URL}")
         
         # Start the server

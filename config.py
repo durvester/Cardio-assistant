@@ -20,12 +20,12 @@ class Config:
     CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
     
     # Server Configuration
-    HOST = os.getenv("HOST", "localhost")
+    HOST = os.getenv("HOST", "0.0.0.0")
     PORT = int(os.getenv("PORT", "8000"))
     
     # A2A Configuration
-    A2A_BASE_URL = f"http://{HOST}:{PORT}/a2a/v1"
     AGENT_CARD_PATH = "agentcard.json"
+    A2A_BASE_URL = os.getenv("A2A_BASE_URL", "http://127.0.0.1:8000")
     
     # Agent Configuration
     AGENT_NAME = "Dr. Walter Reed Cardiology Referral Agent"
