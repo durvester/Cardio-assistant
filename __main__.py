@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 def load_agent_card() -> AgentCard:
     """
-    Load the agent card from agentcard.json file.
+    Load the agent card from .well-known/agent.json file.
     
     Returns:
         AgentCard object parsed from JSON
@@ -101,7 +101,7 @@ def main():
         # Log startup information
         logger.info(f"Starting {config.AGENT_NAME} v{config.AGENT_VERSION}")
         logger.info(f"Server will run on http://{config.HOST}:{config.PORT}")
-        logger.info(f"Agent card available at: http://{config.HOST}:{config.PORT}/.well-known/agent-card.json")
+        logger.info(f"Agent card available at: http://{config.HOST}:{config.PORT}/.well-known/agent.json")
         logger.info(f"A2A endpoint available at: {config.A2A_BASE_URL}")
         
         # Start the server

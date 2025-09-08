@@ -17,7 +17,7 @@ class Config:
     
     # Claude API Configuration
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
+    CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
     
     # Server Configuration
     HOST = os.getenv("HOST", "localhost")
@@ -25,7 +25,7 @@ class Config:
     
     # A2A Configuration
     A2A_BASE_URL = f"http://{HOST}:{PORT}/a2a/v1"
-    AGENT_CARD_PATH = "agentcard.json"
+    AGENT_CARD_PATH = ".well-known/agent.json"
     
     # Agent Configuration
     AGENT_NAME = "Dr. Walter Reed Cardiology Referral Agent"

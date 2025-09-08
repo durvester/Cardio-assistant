@@ -13,9 +13,9 @@
     },
     "version": "1.0.0",
     "capabilities": {
-      "streaming": false,
-      "push_notifications": false,
-      "state_transition_history": false
+        "streaming": true,
+        "push_notifications": false,
+        "state_transition_history": false
     },
     "default_input_modes": [
       "text/plain", 

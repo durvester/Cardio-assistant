@@ -53,7 +53,7 @@ echo "PORT=8000" >> .env
 python __main__.py
 ```
 
-The server will be available at `http://localhost:8000` with the agent card accessible at `/.well-known/agent-card.json`.
+The server will be available at `http://localhost:8000` with the agent card accessible at `/.well-known/agent.json`.
 
 ## Testing
 
@@ -77,7 +77,7 @@ python -m pytest test_a2a_agent.py::test_multi_turn_conversation -v
 - **`agent_executor.py`** - A2A protocol bridge implementing AgentExecutor interface
 - **`agent.py`** - Core business logic with Claude API integration
 - **`config.py`** - Configuration management with environment variables
-- **`agentcard.json`** - A2A agent card definition and capabilities
+- **`.well-known/agent.json`** - A2A agent card definition and capabilities
 - **`test_a2a_agent.py`** - Comprehensive test suite
 
 ### Agent Behavior Modes
@@ -144,7 +144,7 @@ The agent collects and validates:
 | `HOST` | ❌ No | `localhost` | Server host address |
 | `PORT` | ❌ No | `8000` | Server port |
 | `CLAUDE_MODEL` | ❌ No | `claude-3-5-sonnet-20241022` | Claude model version |
-| `AGENT_CARD_PATH` | ❌ No | `agentcard.json` | Path to agent card file |
+| `AGENT_CARD_PATH` | ❌ No | `.well-known/agent.json` | Path to agent card file |
 
 ### Business Rules
 
@@ -161,7 +161,7 @@ This agent implements the A2A specification v0.3.0:
 
 - **JSON-RPC 2.0** transport over HTTP
 - **Required endpoints:** `message/send`, `tasks/get`, `tasks/cancel`
-- **Agent card** served at `/.well-known/agent-card.json`  
+- **Agent card** served at `/.well-known/agent.json`  
 - **Task lifecycle management** with proper state transitions
 - **Professional error handling** with informative responses
 
@@ -194,7 +194,8 @@ The agent uses intelligent state markers:
 ├── agent_executor.py        # A2A protocol bridge  
 ├── agent.py                 # Core agent logic
 ├── config.py                # Configuration management
-├── agentcard.json          # A2A agent card
+├── .well-known/
+│   └── agent.json          # A2A agent card
 ├── pyproject.toml          # Python project config
 ├── test_a2a_agent.py       # Test suite
 ├── tools.py                # Future tool implementations

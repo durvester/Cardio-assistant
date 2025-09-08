@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "http://localhost:8000"
 A2A_ENDPOINT = BASE_URL
-AGENT_CARD_ENDPOINT = f"{BASE_URL}/.well-known/agent-card.json"
+AGENT_CARD_ENDPOINT = f"{BASE_URL}/.well-known/agent.json"
 
 class ComprehensivePhase2Test:
     """Comprehensive test suite for Phase 2 requirements."""
